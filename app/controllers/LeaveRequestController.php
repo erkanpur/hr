@@ -167,5 +167,92 @@ class LeaveRequestController {
             'title' => $title
         ]);
     }
-}
+
+    // --- Managerial/Administrative Actions ---
+
+    public function manage() { // Renamed from manage_requests
+        global $title;
+        // Determine status filter from GET parameter
+        $status_filter = null;
+        $valid_statuses = ['pending', 'approved', 'rejected', 'cancelled', 'all'];
+        if (isset($_GET['status']) && in_array(strtolower($_GET['status']), $valid_statuses)) {
+            $status_filter = strtolower($_GET['status']);
+            if ($status_filter === 'all') {
+                $status_filter = null; // Pass null to getAllRequests to fetch all
+            }
+        }
+
+        $page_subtitle = $status_filter ? ucfirst($status_filter) . " " : "All ";
+        $title = $page_subtitle . 'Leave Requests';
+
+        // Future: Add authorization check here to ensure only managers/admins can access.
+        // if (!$this->isUserAdminOrManager()) {
+        //     $_SESSION['error_message'] = "You are not authorized to manage leave requests.";
+        //     $this->redirect('/');
+        //     return;
+        // }
+
+        $leaveRequestModel = new LeaveRequest();
+        $requests = $leaveRequestModel->getAllRequests($status_filter);
+
+        $this->loadView('leave_requests/manage', [
+            'title' => $title,
+            'leave_requests' => $requests,
+            'current_filter' => $status_filter ?? 'all' // Pass current filter to view for active tab styling
+        ]);
+    }
+
+    public function approve_request($request_id) {
+        // Future: Authorization check
+        $request_id = filter_var($request_id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!$request_id) {
+            $_SESSION['error_message'] = "Invalid request ID for approval.";
+            $this->redirect('/leave_requests/manage');
+            return;
+        }
+
+        $approver_employee_id = $this->getCurrentEmployeeId(); // Placeholder
+        // In a real system, ensure approver_id is valid and authorized
+
+        // For now, comments are not handled with GET-based approval.
+        // If using POST, comments would be: $comments = $_POST['comments_by_approver'] ?? null;
+        $comments = "Approved via system."; 
+
+        $leaveRequestModel = new LeaveRequest();
+        if ($leaveRequestModel->updateStatus($request_id, 'approved', $approver_employee_id, $comments)) {
+            $_SESSION['success_message'] = "Leave request #{$request_id} approved successfully.";
+        } else {
+            $_SESSION['error_message'] = "Failed to approve leave request #{$request_id}. It might have been already actioned or an error occurred.";
+        }
+        $this->redirect('/leave_requests/manage?status=pending'); // Redirect back to pending, or manage all
+    }
+
+    public function reject_request($request_id) {
+        // Future: Authorization check
+        $request_id = filter_var($request_id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!$request_id) {
+            $_SESSION['error_message'] = "Invalid request ID for rejection.";
+            $this->redirect('/leave_requests/manage');
+            return;
+        }
+
+        $approver_employee_id = $this->getCurrentEmployeeId(); // Placeholder
+
+        // For GET-based rejection, comments are tricky. We could have a default one.
+        // If using POST (e.g., from a modal with a textarea for comments):
+        // $comments = !empty($_POST['comments_by_approver']) ? $_POST['comments_by_approver'] : 'Rejected without detailed comment.';
+        // For now, as it's a GET request as per plan for simplicity:
+        $comments = "Rejected via system."; // Or prompt user via JS if possible, or redirect to a page with a comment form.
+
+        $leaveRequestModel = new LeaveRequest();
+        if ($leaveRequestModel->updateStatus($request_id, 'rejected', $approver_employee_id, $comments)) {
+            $_SESSION['success_message'] = "Leave request #{$request_id} rejected successfully.";
+        } else {
+            $_SESSION['error_message'] = "Failed to reject leave request #{$request_id}. It might have been already actioned or an error occurred.";
+        }
+        $this->redirect('/leave_requests/manage?status=pending'); // Redirect back to pending, or manage all
+    }
+
+// Make sure these new methods are within the LeaveRequestController class
+} // End of LeaveRequestController class (ensure this is correctly placed)
 ?>

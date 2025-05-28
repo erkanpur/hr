@@ -98,6 +98,9 @@
                   <a class="dropdown-item" href="<?php echo htmlspecialchars(rtrim(dirname($_SERVER['SCRIPT_NAME']), '/').'/leave_types'); ?>">
                     Manage Leave Types
                   </a>
+                  <a class="dropdown-item" href="<?php echo htmlspecialchars(rtrim(dirname($_SERVER['SCRIPT_NAME']), '/').'/leave_requests/manage'); ?>">
+                    Manage All Requests
+                  </a>
                   <div class="dropdown-divider"></div>
                   <a class="dropdown-item" href="<?php echo htmlspecialchars(rtrim(dirname($_SERVER['SCRIPT_NAME']), '/').'/leave_requests/apply'); ?>">
                     Apply for Leave
@@ -106,6 +109,26 @@
                     My Leave History
                   </a>
                   <!-- Future links: Leave Requests (for managers), etc. -->
+                </div>
+              </li>
+              <!-- NEW PERFORMANCE DROPDOWN -->
+              <li class="nav-item dropdown">
+                <a class="nav-link dropdown-toggle" href="#navbar-performance" data-bs-toggle="dropdown" data-bs-auto-close="outside" role="button" aria-expanded="false">
+                  <span class="nav-link-icon d-md-none d-lg-inline-block">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="icon icon-tabler icon-tabler-trending-up" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M3 17l6 -6l4 4l8 -8" /><path d="M14 7l7 0l0 7" /></svg>
+                  </span>
+                  <span class="nav-link-title">
+                    Performance
+                  </span>
+                </a>
+                <div class="dropdown-menu">
+                  <a class="dropdown-item" href="<?php echo htmlspecialchars(rtrim(dirname($_SERVER['SCRIPT_NAME']), '/').'/review_criteria'); ?>">
+                    Manage Review Criteria
+                  </a>
+                  <a class="dropdown-item" href="<?php echo htmlspecialchars(rtrim(dirname($_SERVER['SCRIPT_NAME']), '/').'/review_periods'); ?>">
+                    Manage Review Periods
+                  </a>
+                  <!-- Other performance related links later -->
                 </div>
               </li>
               <!-- Add more navigation items here -->
