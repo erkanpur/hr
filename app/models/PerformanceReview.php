@@ -67,7 +67,8 @@ class PerformanceReview {
                     areas_for_improvement=:areas_for_improvement,
                     goals_for_next_period=:goals_for_next_period,
                     status=:status,
-                    employee_acknowledged_at=:employee_acknowledged_at
+                    employee_acknowledged_at=:employee_acknowledged_at,
+                    employee_final_comments=:employee_final_comments
                   WHERE id=:id AND employee_id=:employee_id AND review_period_id=:review_period_id"; 
         // Added employee_id and review_period_id to WHERE for more safety, though ID should be unique.
         
@@ -87,6 +88,7 @@ class PerformanceReview {
         $this->goals_for_next_period = ($this->goals_for_next_period === null) ? null : htmlspecialchars(strip_tags($this->goals_for_next_period));
         $this->status = htmlspecialchars(strip_tags($this->status));
         $this->employee_acknowledged_at = ($this->employee_acknowledged_at === null || $this->employee_acknowledged_at === '') ? null : htmlspecialchars(strip_tags($this->employee_acknowledged_at));
+        $this->employee_final_comments = ($this->employee_final_comments === null) ? null : htmlspecialchars(strip_tags($this->employee_final_comments)); // Sanitize new field
 
         $stmt->bindParam(":id", $this->id, PDO::PARAM_INT);
         $stmt->bindParam(":employee_id", $this->employee_id, PDO::PARAM_INT);
@@ -101,6 +103,7 @@ class PerformanceReview {
         $stmt->bindParam(":goals_for_next_period", $this->goals_for_next_period, $this->goals_for_next_period === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
         $stmt->bindParam(":status", $this->status);
         $stmt->bindParam(":employee_acknowledged_at", $this->employee_acknowledged_at, $this->employee_acknowledged_at === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
+        $stmt->bindParam(":employee_final_comments", $this->employee_final_comments, $this->employee_final_comments === null ? PDO::PARAM_NULL : PDO::PARAM_STR); // Bind new field
         
         if ($stmt->execute()) {
             return $stmt->rowCount() > 0;
@@ -232,6 +235,64 @@ class PerformanceReview {
         }
         printf("Error fetching reviews by employee and status: %s.\n", $stmt->errorInfo()[2]);
         return [];
+    }
+
+    public function getReviewsForReviewerByStatus($reviewer_id, array $statuses) {
+        if (empty($statuses)) {
+            return [];
+        }
+
+        $statusPlaceholders = implode(',', array_fill(0, count($statuses), '?'));
+
+        $query = "SELECT pr.*, 
+                         p.name as review_period_name,
+                         p.start_date as review_period_start_date,
+                         p.end_date as review_period_end_date,
+                         CONCAT(e.first_name, ' ', e.last_name) as employee_name 
+                  FROM " . $this->table_name . " pr
+                  JOIN performance_review_periods p ON pr.review_period_id = p.id
+                  JOIN employees e ON pr.employee_id = e.id
+                  WHERE pr.reviewer_id = ? AND pr.status IN (" . $statusPlaceholders . ")
+                  ORDER BY p.start_date ASC, e.first_name ASC, e.last_name ASC"; // Or other relevant order for manager
+        
+        $stmt = $this->conn->prepare($query);
+        
+        $params = array_merge([(int)$reviewer_id], $statuses);
+        
+        if ($stmt->execute($params)) {
+            return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+        printf("Error fetching reviews by reviewer and status: %s.\n", $stmt->errorInfo()[2]);
+        return [];
+    }
+
+    public function getReviewForAcknowledgement($employee_id, $review_id) {
+        $query = "SELECT pr.*, 
+                         CONCAT(e.first_name, ' ', e.last_name) as employee_name,
+                         CONCAT(r.first_name, ' ', r.last_name) as reviewer_name,
+                         p.name as review_period_name,
+                         p.start_date as review_period_start_date,
+                         p.end_date as review_period_end_date
+                  FROM " . $this->table_name . " pr
+                  JOIN employees e ON pr.employee_id = e.id
+                  LEFT JOIN employees r ON pr.reviewer_id = r.id
+                  JOIN performance_review_periods p ON pr.review_period_id = p.id
+                  WHERE pr.id = :review_id AND pr.employee_id = :employee_id AND pr.status = 'pending_acknowledgement'
+                  LIMIT 1";
+        
+        $stmt = $this->conn->prepare($query);
+        
+        $review_id = (int)htmlspecialchars(strip_tags($review_id));
+        $employee_id = (int)htmlspecialchars(strip_tags($employee_id));
+
+        $stmt->bindParam(':review_id', $review_id, PDO::PARAM_INT);
+        $stmt->bindParam(':employee_id', $employee_id, PDO::PARAM_INT);
+        
+        if ($stmt->execute()) {
+            return $stmt->fetch(PDO::FETCH_ASSOC) ?: false;
+        }
+        printf("Error fetching review for acknowledgement: %s.\n", $stmt->errorInfo()[2]);
+        return false;
     }
     
     public function delete($id) {

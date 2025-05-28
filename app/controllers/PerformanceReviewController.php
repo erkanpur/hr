@@ -343,5 +343,379 @@ class PerformanceReviewController {
             $this->redirect('/performance_reviews/self_assessment_form/' . $review_id);
         }
     }
+
+    public function team_reviews_pending_manager() {
+        global $title;
+        $title = 'Team Reviews - Pending Manager Input';
+
+        $manager_id = $this->getCurrentUserId(); // Assumes this is the manager's employee_id
+        if (!$manager_id) {
+            $_SESSION['error_message'] = "User not identified as manager. Please log in.";
+            $this->redirect('/'); // Or login page
+            return;
+        }
+
+        $reviewModel = new PerformanceReview();
+        $pending_manager_statuses = ['manager_review']; // Status indicating it's manager's turn
+        $reviews = $reviewModel->getReviewsForReviewerByStatus($manager_id, $pending_manager_statuses);
+
+        $this->loadView('performance_reviews/team_reviews_pending_manager', [
+            'title' => $title,
+            'reviews' => $reviews
+        ]);
+    }
+
+    public function manager_review_form($review_id) {
+        global $title;
+
+        $manager_id = $this->getCurrentUserId(); // Assumed to be manager's employee_id
+        if (!$manager_id) {
+            $_SESSION['error_message'] = "User not identified. Please log in.";
+            $this->redirect('/'); return;
+        }
+
+        $review_id = filter_var($review_id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!$review_id) {
+            $_SESSION['error_message'] = "Invalid review ID.";
+            $this->redirect('/performance_reviews/team_reviews_pending_manager'); return;
+        }
+
+        $reviewModel = new PerformanceReview();
+        $review = $reviewModel->getReviewById($review_id); // Fetches review with employee_name, reviewer_name etc.
+
+        // Validate review exists, is assigned to this manager, and is in correct status
+        if (!$review) {
+            $_SESSION['error_message'] = "Performance review not found.";
+            $this->redirect('/performance_reviews/team_reviews_pending_manager'); return;
+        }
+        if ($review['reviewer_id'] != $manager_id) {
+            $_SESSION['error_message'] = "You are not authorized to review this assessment.";
+            $this->redirect('/performance_reviews/team_reviews_pending_manager'); return;
+        }
+        if ($review['status'] !== 'manager_review') {
+            $_SESSION['error_message'] = "This review is not currently open for manager assessment (Status: " . $review['status'] . ").";
+            $this->redirect('/performance_reviews/team_reviews_pending_manager'); return;
+        }
+        
+        $title = 'Manager Review: ' . htmlspecialchars($review['employee_name']) . ' - ' . htmlspecialchars($review['review_period_name']);
+
+        $criteriaModel = new ReviewCriteria();
+        $active_criteria = $criteriaModel->getAll(true);
+
+        $ratingModel = new ReviewRating();
+        $existing_ratings_raw = $ratingModel->getRatingsForReview($review_id);
+        $existing_ratings = []; // Re-key by criteria_id
+        foreach ($existing_ratings_raw as $rating) {
+            $existing_ratings[$rating['criteria_id']] = $rating;
+        }
+
+        $this->loadView('performance_reviews/manager_review_form', [
+            'title' => $title,
+            'review' => $review,
+            'criteria_list' => $active_criteria,
+            'existing_ratings' => $existing_ratings,
+            'old_input' => $review // For overall manager comments, ratings, etc.
+        ]);
+    }
+
+    public function save_manager_review($review_id) {
+        global $title; // For re-displaying form on error
+
+        $manager_id = $this->getCurrentUserId();
+        if (!$manager_id) {
+            $_SESSION['error_message'] = "User not identified. Please log in.";
+            $this->redirect('/'); return;
+        }
+
+        $review_id = filter_var($review_id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!$review_id) {
+            $_SESSION['error_message'] = "Invalid review ID for saving manager review.";
+            $this->redirect('/performance_reviews/team_reviews_pending_manager'); return;
+        }
+
+        $reviewModel = new PerformanceReview();
+        $review = $reviewModel->getReviewById($review_id); // Fetch original review
+
+        // Validate review exists, assigned to manager, and is in correct status
+        if (!$review) {
+            $_SESSION['error_message'] = "Performance review not found for saving.";
+            $this->redirect('/performance_reviews/team_reviews_pending_manager'); return;
+        }
+        if ($review['reviewer_id'] != $manager_id) {
+            $_SESSION['error_message'] = "You are not authorized to save this manager review.";
+            $this->redirect('/performance_reviews/team_reviews_pending_manager'); return;
+        }
+        if ($review['status'] !== 'manager_review') {
+             $_SESSION['error_message'] = "This review is not currently open for manager assessment changes (Status: " . $review['status'] . ").";
+            $this->redirect('/performance_reviews/team_reviews_pending_manager'); return;
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            $_SESSION['error_message'] = "Invalid request method.";
+            $this->redirect('/performance_reviews/manager_review_form/' . $review_id); return;
+        }
+
+        $errors = [];
+        $old_input = $_POST; 
+        $ratingsData = [];
+
+        // Process manager ratings for each criterion
+        if (isset($_POST['ratings']) && is_array($_POST['ratings'])) {
+            foreach ($_POST['ratings'] as $criteria_id => $rating_values) {
+                $score_manager = $rating_values['score_manager'] ?? null;
+                if ($score_manager !== null && $score_manager !== '' && !filter_var($score_manager, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 5]])) {
+                    $errors['rating_crit_mgr_' . $criteria_id] = "Invalid manager rating for criteria ID {$criteria_id}. Must be 1-5.";
+                }
+                // Preserve employee's ratings/comments when preparing data for saveRatingsForReview
+                // Fetch existing employee rating for this criterion to pass it along if model needs full set.
+                $existing_employee_rating = null;
+                $existing_employee_comment = null;
+                
+                // We need to fetch existing ratings once, not in a loop for each criterion.
+                // This part should be optimized by fetching all existing ratings for the review once, 
+                // then looking up the specific criterion's employee data.
+                // For now, let's assume $review['ratings_by_criteria_id'] exists or fetch once outside loop.
+                // Corrected logic: Use $existing_ratings (passed to view, or refetch if not available)
+                $ratingModelTemp = new ReviewRating(); 
+                $all_existing_ratings_for_review = $ratingModelTemp->getRatingsForReview($review_id);
+                $temp_existing_ratings = [];
+                foreach($all_existing_ratings_for_review as $ex_rat) {
+                    $temp_existing_ratings[$ex_rat['criteria_id']] = $ex_rat;
+                }
+
+                if (isset($temp_existing_ratings[(int)$criteria_id])) {
+                    $existing_employee_rating = $temp_existing_ratings[(int)$criteria_id]['rating_score_employee'];
+                    $existing_employee_comment = $temp_existing_ratings[(int)$criteria_id]['employee_self_assessment_comments_on_criteria'];
+                }
+
+
+                $ratingsData[] = [
+                    'criteria_id' => (int)$criteria_id,
+                    'rating_score_manager' => ($score_manager === '' || $score_manager === null) ? null : (int)$score_manager,
+                    'manager_comments_on_criteria' => $rating_values['comments_manager'] ?? null,
+                    'rating_score_employee' => $existing_employee_rating, 
+                    'employee_self_assessment_comments_on_criteria' => $existing_employee_comment
+                ];
+            }
+        }
+        
+        // Overall manager feedback
+        $overall_manager_comments = $_POST['overall_manager_comments'] ?? null;
+        $strengths = $_POST['strengths'] ?? null;
+        $areas_for_improvement = $_POST['areas_for_improvement'] ?? null;
+        $goals_for_next_period = $_POST['goals_for_next_period'] ?? null;
+        $overall_score = (isset($_POST['overall_score']) && $_POST['overall_score'] !== '') ? $_POST['overall_score'] : null;
+
+        if ($overall_score !== null && !is_numeric($overall_score)) { 
+            $errors['overall_score'] = 'Overall score must be a number if provided.';
+        }
+
+
+        if (!empty($errors)) {
+            $title = 'Manager Review: ' . htmlspecialchars($review['employee_name']) . ' - ' . htmlspecialchars($review['review_period_name']);
+            $criteriaModel = new ReviewCriteria();
+            $active_criteria = $criteriaModel->getAll(true);
+            $ratingModel = new ReviewRating();
+            $existing_ratings_raw = $ratingModel->getRatingsForReview($review_id); // Re-fetch for view
+            $existing_ratings = [];
+            foreach ($existing_ratings_raw as $rating) { $existing_ratings[$rating['criteria_id']] = $rating; }
+
+            $this->loadView('performance_reviews/manager_review_form', [
+                'title' => $title, 'review' => $review, 'criteria_list' => $active_criteria,
+                'existing_ratings' => $existing_ratings, 'errors' => $errors, 'old_input' => $old_input
+            ]);
+            return;
+        }
+
+        $ratingModel = new ReviewRating(); // Already instantiated, just ensure connection if needed
+        $this->conn = Database::getInstance()->getConnection(); // Ensure controller has connection property for transaction
+        
+        try {
+            $this->conn->beginTransaction();
+
+            if (!empty($ratingsData)) {
+                if (!$ratingModel->saveRatingsForReview($review_id, $ratingsData)) {
+                    throw new Exception("Failed to save manager's detailed ratings.");
+                }
+            }
+            
+            $reviewToUpdate = new PerformanceReview($this->conn);
+            $reviewToUpdate->id = $review_id;
+            $reviewToUpdate->employee_id = $review['employee_id']; 
+            $reviewToUpdate->review_period_id = $review['review_period_id']; 
+            
+            $reviewToUpdate->overall_manager_comments = $overall_manager_comments;
+            $reviewToUpdate->strengths = $strengths;
+            $reviewToUpdate->areas_for_improvement = $areas_for_improvement;
+            $reviewToUpdate->goals_for_next_period = $goals_for_next_period;
+            $reviewToUpdate->overall_score = $overall_score;
+            $reviewToUpdate->status = 'pending_acknowledgement'; // Changed from 'completed'
+            $reviewToUpdate->review_date = date('Y-m-d'); 
+
+            $reviewToUpdate->reviewer_id = $review['reviewer_id']; 
+            $reviewToUpdate->employee_self_assessment_comments = $review['employee_self_assessment_comments'];
+            $reviewToUpdate->employee_acknowledged_at = $review['employee_acknowledged_at'];
+
+
+            if (!$reviewToUpdate->update()) { 
+                 throw new Exception("Failed to update main review with manager's feedback.");
+            }
+
+            $this->conn->commit();
+            $_SESSION['success_message'] = "Manager review for " . htmlspecialchars($review['employee_name']) . " saved successfully.";
+            $this->redirect('/performance_reviews/team_reviews_pending_manager');
+
+        } catch (Exception $e) {
+            if ($this->conn && $this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
+            $_SESSION['error_message'] = "Error saving manager review: " . $e->getMessage();
+            error_log("Error in save_manager_review for review_id {$review_id}: " . $e->getMessage());
+            // To repopulate form correctly, we need to pass all necessary data again
+             $title_on_error = 'Manager Review: ' . htmlspecialchars($review['employee_name']) . ' - ' . htmlspecialchars($review['review_period_name']);
+             $criteriaModel_on_error = new ReviewCriteria();
+             $active_criteria_on_error = $criteriaModel_on_error->getAll(true);
+             $ratingModel_on_error = new ReviewRating();
+             $existing_ratings_raw_on_error = $ratingModel_on_error->getRatingsForReview($review_id);
+             $existing_ratings_on_error = [];
+             foreach ($existing_ratings_raw_on_error as $rating_on_error) { $existing_ratings_on_error[$rating_on_error['criteria_id']] = $rating_on_error; }
+             $errors['exception'] = $e->getMessage(); // Add exception message to errors
+
+             $this->loadView('performance_reviews/manager_review_form', [
+                'title' => $title_on_error, 'review' => $review, 'criteria_list' => $active_criteria_on_error,
+                'existing_ratings' => $existing_ratings_on_error, 'errors' => $errors, 'old_input' => $old_input
+            ]);
+        }
+    }
+
+    public function view_for_acknowledgement($review_id) {
+        global $title;
+
+        $employee_id = $this->getCurrentUserId();
+        if (!$employee_id) {
+            $_SESSION['error_message'] = "User not identified. Please log in.";
+            $this->redirect('/'); return;
+        }
+
+        $review_id = filter_var($review_id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!$review_id) {
+            $_SESSION['error_message'] = "Invalid review ID for acknowledgement.";
+            $this->redirect('/performance_reviews/my_pending_reviews'); return; // Or a generic dashboard
+        }
+
+        $reviewModel = new PerformanceReview();
+        $review = $reviewModel->getReviewForAcknowledgement($employee_id, $review_id);
+
+        if (!$review) {
+            $_SESSION['error_message'] = "Performance review not found, not available for acknowledgement, or you are not authorized.";
+            $this->redirect('/performance_reviews/my_pending_reviews'); return;
+        }
+        
+        $title = 'Acknowledge Performance Review: ' . htmlspecialchars($review['review_period_name']);
+
+        // Fetch criteria and all ratings (employee + manager) to display
+        $criteriaModel = new ReviewCriteria();
+        $active_criteria = $criteriaModel->getAll(true);
+
+        $ratingModel = new ReviewRating();
+        $all_ratings_raw = $ratingModel->getRatingsForReview($review_id);
+        $all_ratings = []; // Re-key by criteria_id
+        foreach ($all_ratings_raw as $rating) {
+            $all_ratings[$rating['criteria_id']] = $rating;
+        }
+
+        $this->loadView('performance_reviews/acknowledge_review_form', [
+            'title' => $title,
+            'review' => $review,
+            'criteria_list' => $active_criteria,
+            'all_ratings' => $all_ratings, // Contains both employee and manager ratings/comments
+            'old_input' => $review // For potential employee_final_comments repopulation
+        ]);
+    }
+
+    public function acknowledge_review_submit($review_id) {
+        global $title; // For potential re-display of form on error
+
+        $employee_id = $this->getCurrentUserId();
+        if (!$employee_id) {
+            $_SESSION['error_message'] = "User not identified. Please log in.";
+            $this->redirect('/'); return;
+        }
+
+        $review_id = filter_var($review_id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!$review_id) {
+            $_SESSION['error_message'] = "Invalid review ID for acknowledgement.";
+            $this->redirect('/performance_reviews/my_pending_reviews'); return;
+        }
+
+        $reviewModel = new PerformanceReview();
+        $review = $reviewModel->getReviewById($review_id); 
+
+        if (!$review) {
+            $_SESSION['error_message'] = "Performance review not found for acknowledgement.";
+            $this->redirect('/performance_reviews/my_pending_reviews'); return;
+        }
+        if ($review['employee_id'] != $employee_id) {
+            $_SESSION['error_message'] = "You are not authorized to acknowledge this review.";
+            $this->redirect('/performance_reviews/my_pending_reviews'); return;
+        }
+        if ($review['status'] !== 'pending_acknowledgement') {
+            $_SESSION['error_message'] = "This review is not currently awaiting your acknowledgement (Status: " . htmlspecialchars($review['status']) . ").";
+            $this->redirect('/performance_reviews/my_pending_reviews'); return;
+        }
+
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            $_SESSION['error_message'] = "Invalid request method for acknowledgement.";
+            $this->redirect('/performance_reviews/view_for_acknowledgement/' . $review_id); return;
+        }
+
+        if (!isset($_POST['acknowledged'])) {
+            $_SESSION['error_message'] = "You must tick the acknowledgement checkbox to finalize the review.";
+            
+            $title = 'Acknowledge Performance Review: ' . htmlspecialchars($review['review_period_name']);
+            $criteriaModel = new ReviewCriteria();
+            $active_criteria = $criteriaModel->getAll(true);
+            $ratingModel = new ReviewRating();
+            $all_ratings_raw = $ratingModel->getRatingsForReview($review_id);
+            $all_ratings = []; 
+            foreach ($all_ratings_raw as $rating) { $all_ratings[$rating['criteria_id']] = $rating; }
+            
+            $this->loadView('performance_reviews/acknowledge_review_form', [
+                'title' => $title, 'review' => $review, 'criteria_list' => $active_criteria,
+                'all_ratings' => $all_ratings, 'old_input' => $_POST,
+                'errors' => ['acknowledged' => 'You must tick the acknowledgement checkbox.']
+            ]);
+            return;
+        }
+        
+        $employee_final_comments = $_POST['employee_final_comments'] ?? null;
+
+        $reviewToUpdate = new PerformanceReview();
+        $reviewToUpdate->id = $review_id;
+        $reviewToUpdate->employee_id = $employee_id; 
+        $reviewToUpdate->review_period_id = $review['review_period_id']; 
+        
+        $reviewToUpdate->employee_final_comments = $employee_final_comments; 
+        $reviewToUpdate->status = 'completed';
+        $reviewToUpdate->employee_acknowledged_at = date('Y-m-d H:i:s'); 
+
+        // Carry over other fields
+        $reviewToUpdate->reviewer_id = $review['reviewer_id'];
+        $reviewToUpdate->review_date = $review['review_date'];
+        $reviewToUpdate->overall_score = $review['overall_score'];
+        $reviewToUpdate->overall_manager_comments = $review['overall_manager_comments'];
+        $reviewToUpdate->employee_self_assessment_comments = $review['employee_self_assessment_comments'];
+        $reviewToUpdate->strengths = $review['strengths'];
+        $reviewToUpdate->areas_for_improvement = $review['areas_for_improvement'];
+        $reviewToUpdate->goals_for_next_period = $review['goals_for_next_period'];
+        
+        if ($reviewToUpdate->update()) { 
+            $_SESSION['success_message'] = "Performance review acknowledged and finalized successfully.";
+            $this->redirect('/performance_reviews/my_pending_reviews'); 
+        } else {
+            $_SESSION['error_message'] = "Failed to finalize review. Please try again.";
+            $this->redirect('/performance_reviews/view_for_acknowledgement/' . $review_id);
+        }
+    }
 }
 ?>
